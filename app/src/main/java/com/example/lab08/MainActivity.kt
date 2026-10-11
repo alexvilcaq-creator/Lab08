@@ -4,14 +4,23 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.room.Room
 import com.example.lab08.ui.theme.Lab08Theme
-import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -24,13 +33,13 @@ class MainActivity : ComponentActivity() {
                         applicationContext,
                         TaskDatabase::class.java,
                         "task_db"
-                    ).build()
+                    )
+                        .fallbackToDestructiveMigration(true)
+                        .build()
                 }
                 val viewModel = remember { TaskViewModel(db.taskDao()) }
 
-                Surface(modifier = Modifier.fillMaxSize()) {
-                    TaskScreen(viewModel)
-                }
+                TaskScreen(viewModel)
             }
         }
     }
@@ -38,58 +47,291 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 fun TaskScreen(viewModel: TaskViewModel) {
-    val tasks by viewModel.tasks.collectAsState()
-    val coroutineScope = rememberCoroutineScope()
-    var newTaskDescription by remember { mutableStateOf("") }
+    val tasks by viewModel.visibleTasks.collectAsState()
+    val allTasks by viewModel.tasks.collectAsState()
+    val query by viewModel.searchQuery.collectAsState()
+    val filter by viewModel.filter.collectAsState()
+    val sort by viewModel.sort.collectAsState()
+    val categoryFilter by viewModel.categoryFilter.collectAsState()
+    val categories by viewModel.categories.collectAsState()
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .statusBarsPadding()
-            .padding(16.dp)
-    ) {
-        TextField(
-            value = newTaskDescription,
-            onValueChange = { newTaskDescription = it },
-            label = { Text("Nueva tarea") },
-            modifier = Modifier.fillMaxWidth()
-        )
+    var showAddDialog by remember { mutableStateOf(false) }
+    var taskToEdit by remember { mutableStateOf<Task?>(null) }
+    var sortMenuOpen by remember { mutableStateOf(false) }
 
-        Button(
-            onClick = {
-                if (newTaskDescription.isNotEmpty()) {
-                    viewModel.addTask(newTaskDescription)
-                    newTaskDescription = ""
-                }
-            },
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = 8.dp)
-        ) {
-            Text("Agregar tarea")
+    Scaffold(
+        floatingActionButton = {
+            FloatingActionButton(onClick = { showAddDialog = true }) {
+                Icon(Icons.Default.Add, contentDescription = "Agregar tarea")
+            }
         }
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        tasks.forEach { task ->
+    ) { innerPadding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+                .padding(horizontal = 16.dp)
+        ) {
             Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 16.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(text = task.description)
-                Button(onClick = { viewModel.toggleTaskCompletion(task) }) {
-                    Text(if (task.isCompleted) "Completada" else "Pendiente")
+                Text("Mis tareas", style = MaterialTheme.typography.headlineMedium)
+                TextButton(onClick = { viewModel.deleteAllTasks() }) {
+                    Text("Borrar todas")
+                }
+            }
+
+            Text(
+                text = "${allTasks.count { !it.isCompleted }} pendientes",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(bottom = 8.dp)
+            )
+
+            // Buscar
+            OutlinedTextField(
+                value = query,
+                onValueChange = { viewModel.setSearchQuery(it) },
+                placeholder = { Text("Buscar tareas") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            // Filtrar por estado
+            Row(
+                modifier = Modifier
+                    .horizontalScroll(rememberScrollState())
+                    .padding(top = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                TaskFilter.entries.forEach { option ->
+                    FilterChip(
+                        selected = filter == option,
+                        onClick = { viewModel.setFilter(option) },
+                        label = { Text(option.label) }
+                    )
+                }
+            }
+
+            // Filtrar por categoría
+            Row(
+                modifier = Modifier
+                    .horizontalScroll(rememberScrollState())
+                    .padding(top = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                FilterChip(
+                    selected = categoryFilter == null,
+                    onClick = { viewModel.setCategoryFilter(null) },
+                    label = { Text("Todas las categorías") }
+                )
+                categories.forEach { category ->
+                    FilterChip(
+                        selected = categoryFilter == category,
+                        onClick = { viewModel.setCategoryFilter(category) },
+                        label = { Text(category) }
+                    )
+                }
+            }
+
+            // Ordenar
+            Box {
+                TextButton(onClick = { sortMenuOpen = true }) {
+                    Text("Ordenar por: ${sort.label}")
+                }
+                DropdownMenu(
+                    expanded = sortMenuOpen,
+                    onDismissRequest = { sortMenuOpen = false }
+                ) {
+                    TaskSort.entries.forEach { option ->
+                        DropdownMenuItem(
+                            text = { Text(option.label) },
+                            onClick = {
+                                viewModel.setSort(option)
+                                sortMenuOpen = false
+                            }
+                        )
+                    }
+                }
+            }
+
+            if (tasks.isEmpty()) {
+                Text(
+                    text = "No hay tareas. Toca + para agregar una.",
+                    modifier = Modifier.padding(top = 24.dp)
+                )
+            }
+
+            LazyColumn(modifier = Modifier.weight(1f)) {
+                items(tasks, key = { it.id }) { task ->
+                    TaskItem(
+                        task = task,
+                        onToggle = { viewModel.toggleTaskCompletion(task) },
+                        onEdit = { taskToEdit = task },
+                        onDelete = { viewModel.deleteTask(task) }
+                    )
+                    HorizontalDivider()
                 }
             }
         }
+    }
 
-        Button(
-            onClick = { coroutineScope.launch { viewModel.deleteAllTasks() } },
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = 16.dp)
-        ) {
-            Text("Eliminar todas las tareas")
+    if (showAddDialog) {
+        TaskDialog(
+            title = "Nueva tarea",
+            task = null,
+            confirmLabel = "Agregar",
+            onConfirm = { description, category, priority, recurrence ->
+                viewModel.addTask(description, category, priority, recurrence)
+                showAddDialog = false
+            },
+            onDismiss = { showAddDialog = false }
+        )
+    }
+
+    taskToEdit?.let { task ->
+        TaskDialog(
+            title = "Editar tarea",
+            task = task,
+            confirmLabel = "Guardar",
+            onConfirm = { description, category, priority, recurrence ->
+                viewModel.updateTask(
+                    task.copy(
+                        description = description,
+                        category = category,
+                        priority = priority,
+                        recurrence = recurrence
+                    )
+                )
+                taskToEdit = null
+            },
+            onDismiss = { taskToEdit = null }
+        )
+    }
+}
+
+@Composable
+fun TaskItem(
+    task: Task,
+    onToggle: () -> Unit,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit
+) {
+    val priorityColor = when (task.priority) {
+        Priority.ALTA -> MaterialTheme.colorScheme.error
+        Priority.MEDIA -> MaterialTheme.colorScheme.tertiary
+        Priority.BAJA -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    val details = buildString {
+        append("${task.category} • Prioridad ${task.priority.label}")
+        if (task.recurrence != Recurrence.NINGUNA) append(" • ${task.recurrence.label}")
+    }
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Checkbox(checked = task.isCompleted, onCheckedChange = { onToggle() })
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = task.description,
+                textDecoration = if (task.isCompleted) TextDecoration.LineThrough else null,
+                color = if (task.isCompleted) MaterialTheme.colorScheme.onSurfaceVariant
+                else MaterialTheme.colorScheme.onSurface
+            )
+            Text(
+                text = details,
+                style = MaterialTheme.typography.bodySmall,
+                color = priorityColor
+            )
+        }
+        IconButton(onClick = onEdit) {
+            Icon(Icons.Default.Edit, contentDescription = "Editar tarea")
+        }
+        IconButton(onClick = onDelete) {
+            Icon(Icons.Default.Delete, contentDescription = "Eliminar tarea")
         }
     }
+}
+
+@Composable
+fun TaskDialog(
+    title: String,
+    task: Task?,
+    confirmLabel: String,
+    onConfirm: (String, String, Priority, Recurrence) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var description by remember { mutableStateOf(task?.description ?: "") }
+    var category by remember { mutableStateOf(task?.category ?: "General") }
+    var priority by remember { mutableStateOf(task?.priority ?: Priority.MEDIA) }
+    var recurrence by remember { mutableStateOf(task?.recurrence ?: Recurrence.NINGUNA) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = description,
+                    onValueChange = { description = it },
+                    label = { Text("Descripción") },
+                    singleLine = true
+                )
+                OutlinedTextField(
+                    value = category,
+                    onValueChange = { category = it },
+                    label = { Text("Categoría") },
+                    singleLine = true
+                )
+                Text("Prioridad", style = MaterialTheme.typography.labelLarge)
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Priority.entries.forEach { option ->
+                        FilterChip(
+                            selected = priority == option,
+                            onClick = { priority = option },
+                            label = { Text(option.label) }
+                        )
+                    }
+                }
+                Text("Repetición", style = MaterialTheme.typography.labelLarge)
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Recurrence.entries.forEach { option ->
+                        FilterChip(
+                            selected = recurrence == option,
+                            onClick = { recurrence = option },
+                            label = { Text(option.label) }
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                if (description.isNotBlank()) {
+                    onConfirm(
+                        description.trim(),
+                        category.trim().ifBlank { "General" },
+                        priority,
+                        recurrence
+                    )
+                }
+            }) {
+                Text(confirmLabel)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancelar") }
+        }
+    )
 }
