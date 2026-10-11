@@ -10,13 +10,14 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
-class TaskViewModel(private val dao: TaskDao) : ViewModel() {
+class TaskViewModel(
+    private val dao: TaskDao,
+    private val scheduler: ReminderScheduler
+) : ViewModel() {
 
-    // Todas las tareas guardadas
     private val _tasks = MutableStateFlow<List<Task>>(emptyList())
     val tasks: StateFlow<List<Task>> = _tasks
 
-    // Estado de búsqueda, filtros y orden
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery
 
@@ -29,7 +30,6 @@ class TaskViewModel(private val dao: TaskDao) : ViewModel() {
     private val _categoryFilter = MutableStateFlow<String?>(null)
     val categoryFilter: StateFlow<String?> = _categoryFilter
 
-    // Tareas que se muestran: búsqueda + filtros + orden aplicados
     val visibleTasks: StateFlow<List<Task>> = combine(
         _tasks, _searchQuery, _filter, _sort, _categoryFilter
     ) { tasks, query, filter, sort, category ->
@@ -51,7 +51,6 @@ class TaskViewModel(private val dao: TaskDao) : ViewModel() {
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    // Categorías que existen
     val categories: StateFlow<List<String>> = _tasks
         .map { list -> list.map { it.category }.distinct().sorted() }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
@@ -71,38 +70,51 @@ class TaskViewModel(private val dao: TaskDao) : ViewModel() {
     fun setSort(sort: TaskSort) { _sort.value = sort }
     fun setCategoryFilter(category: String?) { _categoryFilter.value = category }
 
-    fun addTask(description: String, category: String, priority: Priority, recurrence: Recurrence) {
+    fun addTask(
+        description: String,
+        category: String,
+        priority: Priority,
+        recurrence: Recurrence,
+        reminderMinutes: Long
+    ) {
         viewModelScope.launch {
-            dao.insertTask(
+            val id = dao.insertTask(
                 Task(
                     description = description,
                     category = category,
                     priority = priority,
                     recurrence = recurrence
                 )
-            )
-            _tasks.value = dao.getAllTasks()
-        }
-    }
-
-    // Marca/desmarca una tarea. Si es recurrente y se completa, crea otra pendiente igual
-    fun toggleTaskCompletion(task: Task) {
-        viewModelScope.launch {
-            val updated = task.copy(isCompleted = !task.isCompleted)
-            dao.updateTask(updated)
-            if (updated.isCompleted && task.recurrence != Recurrence.NINGUNA) {
-                dao.insertTask(
-                    task.copy(id = 0, isCompleted = false, createdAt = System.currentTimeMillis())
-                )
+            ).toInt()
+            if (reminderMinutes > 0) {
+                scheduler.schedule(id, description, reminderMinutes)
             }
             _tasks.value = dao.getAllTasks()
         }
     }
 
-    // Editar una tarea (descripción, categoría, prioridad o repetición)
-    fun updateTask(task: Task) {
+    fun toggleTaskCompletion(task: Task) {
+        viewModelScope.launch {
+            val updated = task.copy(isCompleted = !task.isCompleted)
+            dao.updateTask(updated)
+            if (updated.isCompleted) {
+                scheduler.cancel(task.id)
+                if (task.recurrence != Recurrence.NINGUNA) {
+                    dao.insertTask(
+                        task.copy(id = 0, isCompleted = false, createdAt = System.currentTimeMillis())
+                    )
+                }
+            }
+            _tasks.value = dao.getAllTasks()
+        }
+    }
+
+    fun updateTask(task: Task, reminderMinutes: Long) {
         viewModelScope.launch {
             dao.updateTask(task)
+            if (reminderMinutes > 0) {
+                scheduler.schedule(task.id, task.description, reminderMinutes)
+            }
             _tasks.value = dao.getAllTasks()
         }
     }
@@ -110,12 +122,14 @@ class TaskViewModel(private val dao: TaskDao) : ViewModel() {
     fun deleteTask(task: Task) {
         viewModelScope.launch {
             dao.deleteTask(task)
+            scheduler.cancel(task.id)
             _tasks.value = dao.getAllTasks()
         }
     }
 
     fun deleteAllTasks() {
         viewModelScope.launch {
+            _tasks.value.forEach { scheduler.cancel(it.id) }
             dao.deleteAllTasks()
             _tasks.value = emptyList()
         }
