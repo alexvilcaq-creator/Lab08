@@ -1,9 +1,13 @@
 package com.example.lab08
 
+import android.Manifest
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -21,6 +25,15 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.room.Room
 import com.example.lab08.ui.theme.Lab08Theme
+import androidx.compose.foundation.verticalScroll
+
+// Opciones de recordatorio: texto y minutos de espera
+private val reminderOptions = listOf(
+    "Sin recordatorio" to 0L,
+    "En 1 minuto" to 1L,
+    "En 1 hora" to 60L,
+    "En 1 día" to 1440L
+)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -28,6 +41,16 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             Lab08Theme {
+                // Pedir permiso de notificaciones (Android 13 o superior)
+                val permissionLauncher = rememberLauncherForActivityResult(
+                    ActivityResultContracts.RequestPermission()
+                ) { }
+                LaunchedEffect(Unit) {
+                    if (Build.VERSION.SDK_INT >= 33) {
+                        permissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    }
+                }
+
                 val db = remember {
                     Room.databaseBuilder(
                         applicationContext,
@@ -37,7 +60,9 @@ class MainActivity : ComponentActivity() {
                         .fallbackToDestructiveMigration(true)
                         .build()
                 }
-                val viewModel = remember { TaskViewModel(db.taskDao()) }
+                val viewModel = remember {
+                    TaskViewModel(db.taskDao(), ReminderScheduler(applicationContext))
+                }
 
                 TaskScreen(viewModel)
             }
@@ -92,7 +117,6 @@ fun TaskScreen(viewModel: TaskViewModel) {
                 modifier = Modifier.padding(bottom = 8.dp)
             )
 
-            // Buscar
             OutlinedTextField(
                 value = query,
                 onValueChange = { viewModel.setSearchQuery(it) },
@@ -101,7 +125,6 @@ fun TaskScreen(viewModel: TaskViewModel) {
                 modifier = Modifier.fillMaxWidth()
             )
 
-            // Filtrar por estado
             Row(
                 modifier = Modifier
                     .horizontalScroll(rememberScrollState())
@@ -117,7 +140,6 @@ fun TaskScreen(viewModel: TaskViewModel) {
                 }
             }
 
-            // Filtrar por categoría
             Row(
                 modifier = Modifier
                     .horizontalScroll(rememberScrollState())
@@ -138,7 +160,6 @@ fun TaskScreen(viewModel: TaskViewModel) {
                 }
             }
 
-            // Ordenar
             Box {
                 TextButton(onClick = { sortMenuOpen = true }) {
                     Text("Ordenar por: ${sort.label}")
@@ -185,8 +206,8 @@ fun TaskScreen(viewModel: TaskViewModel) {
             title = "Nueva tarea",
             task = null,
             confirmLabel = "Agregar",
-            onConfirm = { description, category, priority, recurrence ->
-                viewModel.addTask(description, category, priority, recurrence)
+            onConfirm = { description, category, priority, recurrence, reminder ->
+                viewModel.addTask(description, category, priority, recurrence, reminder)
                 showAddDialog = false
             },
             onDismiss = { showAddDialog = false }
@@ -198,14 +219,15 @@ fun TaskScreen(viewModel: TaskViewModel) {
             title = "Editar tarea",
             task = task,
             confirmLabel = "Guardar",
-            onConfirm = { description, category, priority, recurrence ->
+            onConfirm = { description, category, priority, recurrence, reminder ->
                 viewModel.updateTask(
                     task.copy(
                         description = description,
                         category = category,
                         priority = priority,
                         recurrence = recurrence
-                    )
+                    ),
+                    reminder
                 )
                 taskToEdit = null
             },
@@ -263,19 +285,23 @@ fun TaskDialog(
     title: String,
     task: Task?,
     confirmLabel: String,
-    onConfirm: (String, String, Priority, Recurrence) -> Unit,
+    onConfirm: (String, String, Priority, Recurrence, Long) -> Unit,
     onDismiss: () -> Unit
 ) {
     var description by remember { mutableStateOf(task?.description ?: "") }
     var category by remember { mutableStateOf(task?.category ?: "General") }
     var priority by remember { mutableStateOf(task?.priority ?: Priority.MEDIA) }
     var recurrence by remember { mutableStateOf(task?.recurrence ?: Recurrence.NINGUNA) }
+    var reminder by remember { mutableStateOf(0L) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(title) },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
                 OutlinedTextField(
                     value = description,
                     onValueChange = { description = it },
@@ -314,6 +340,19 @@ fun TaskDialog(
                         )
                     }
                 }
+                Text("Recordatorio", style = MaterialTheme.typography.labelLarge)
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    reminderOptions.forEach { (label, minutes) ->
+                        FilterChip(
+                            selected = reminder == minutes,
+                            onClick = { reminder = minutes },
+                            label = { Text(label) }
+                        )
+                    }
+                }
             }
         },
         confirmButton = {
@@ -323,7 +362,8 @@ fun TaskDialog(
                         description.trim(),
                         category.trim().ifBlank { "General" },
                         priority,
-                        recurrence
+                        recurrence,
+                        reminder
                     )
                 }
             }) {
