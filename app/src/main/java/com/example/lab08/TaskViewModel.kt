@@ -3,45 +3,121 @@ package com.example.lab08
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 class TaskViewModel(private val dao: TaskDao) : ViewModel() {
 
-    // Estado para la lista de tareas
+    // Todas las tareas guardadas
     private val _tasks = MutableStateFlow<List<Task>>(emptyList())
     val tasks: StateFlow<List<Task>> = _tasks
 
+    // Estado de búsqueda, filtros y orden
+    private val _searchQuery = MutableStateFlow("")
+    val searchQuery: StateFlow<String> = _searchQuery
+
+    private val _filter = MutableStateFlow(TaskFilter.TODAS)
+    val filter: StateFlow<TaskFilter> = _filter
+
+    private val _sort = MutableStateFlow(TaskSort.FECHA)
+    val sort: StateFlow<TaskSort> = _sort
+
+    private val _categoryFilter = MutableStateFlow<String?>(null)
+    val categoryFilter: StateFlow<String?> = _categoryFilter
+
+    // Tareas que se muestran: búsqueda + filtros + orden aplicados
+    val visibleTasks: StateFlow<List<Task>> = combine(
+        _tasks, _searchQuery, _filter, _sort, _categoryFilter
+    ) { tasks, query, filter, sort, category ->
+        val result = tasks
+            .filter { query.isBlank() || it.description.contains(query, ignoreCase = true) }
+            .filter {
+                when (filter) {
+                    TaskFilter.TODAS -> true
+                    TaskFilter.PENDIENTES -> !it.isCompleted
+                    TaskFilter.COMPLETADAS -> it.isCompleted
+                }
+            }
+            .filter { category == null || it.category == category }
+        when (sort) {
+            TaskSort.FECHA -> result.sortedByDescending { it.createdAt }
+            TaskSort.NOMBRE -> result.sortedBy { it.description.lowercase() }
+            TaskSort.ESTADO -> result.sortedBy { it.isCompleted }
+            TaskSort.PRIORIDAD -> result.sortedByDescending { it.priority.ordinal }
+        }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    // Categorías que existen
+    val categories: StateFlow<List<String>> = _tasks
+        .map { list -> list.map { it.category }.distinct().sorted() }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
     init {
-        // Al inicializar, cargamos las tareas de la base de datos
+        loadTasks()
+    }
+
+    private fun loadTasks() {
         viewModelScope.launch {
             _tasks.value = dao.getAllTasks()
         }
     }
 
-    // Función para añadir una nueva tarea
-    fun addTask(description: String) {
-        val newTask = Task(description = description)
+    fun setSearchQuery(query: String) { _searchQuery.value = query }
+    fun setFilter(filter: TaskFilter) { _filter.value = filter }
+    fun setSort(sort: TaskSort) { _sort.value = sort }
+    fun setCategoryFilter(category: String?) { _categoryFilter.value = category }
+
+    fun addTask(description: String, category: String, priority: Priority, recurrence: Recurrence) {
         viewModelScope.launch {
-            dao.insertTask(newTask)
-            _tasks.value = dao.getAllTasks() // Recargamos la lista
+            dao.insertTask(
+                Task(
+                    description = description,
+                    category = category,
+                    priority = priority,
+                    recurrence = recurrence
+                )
+            )
+            _tasks.value = dao.getAllTasks()
         }
     }
 
-    // Función para alternar el estado de completado de una tarea
+    // Marca/desmarca una tarea. Si es recurrente y se completa, crea otra pendiente igual
     fun toggleTaskCompletion(task: Task) {
         viewModelScope.launch {
-            val updatedTask = task.copy(isCompleted = !task.isCompleted)
-            dao.updateTask(updatedTask)
-            _tasks.value = dao.getAllTasks() // Recargamos la lista
+            val updated = task.copy(isCompleted = !task.isCompleted)
+            dao.updateTask(updated)
+            if (updated.isCompleted && task.recurrence != Recurrence.NINGUNA) {
+                dao.insertTask(
+                    task.copy(id = 0, isCompleted = false, createdAt = System.currentTimeMillis())
+                )
+            }
+            _tasks.value = dao.getAllTasks()
         }
     }
 
-    // Función para eliminar todas las tareas
+    // Editar una tarea (descripción, categoría, prioridad o repetición)
+    fun updateTask(task: Task) {
+        viewModelScope.launch {
+            dao.updateTask(task)
+            _tasks.value = dao.getAllTasks()
+        }
+    }
+
+    fun deleteTask(task: Task) {
+        viewModelScope.launch {
+            dao.deleteTask(task)
+            _tasks.value = dao.getAllTasks()
+        }
+    }
+
     fun deleteAllTasks() {
         viewModelScope.launch {
             dao.deleteAllTasks()
-            _tasks.value = emptyList() // Vaciamos la lista en el estado
+            _tasks.value = emptyList()
         }
     }
 }
