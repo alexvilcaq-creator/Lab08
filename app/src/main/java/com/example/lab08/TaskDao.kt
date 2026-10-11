@@ -15,7 +15,7 @@ interface TaskDao {
 
     // Insertar una nueva tarea
     @Insert
-    suspend fun insertTask(task: Task)
+    suspend fun insertTask(task: Task): Long
 
     // Actualizar una tarea (completar o editar)
     @Update
