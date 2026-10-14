@@ -12,7 +12,8 @@ import kotlinx.coroutines.launch
 
 class TaskViewModel(
     private val dao: TaskDao,
-    private val scheduler: ReminderScheduler
+    private val scheduler: ReminderScheduler,
+    private val cloud: CloudRepository
 ) : ViewModel() {
 
     private val _tasks = MutableStateFlow<List<Task>>(emptyList())
@@ -29,6 +30,10 @@ class TaskViewModel(
 
     private val _categoryFilter = MutableStateFlow<String?>(null)
     val categoryFilter: StateFlow<String?> = _categoryFilter
+
+    // Mensaje del estado de la sincronización
+    private val _message = MutableStateFlow<String?>(null)
+    val message: StateFlow<String?> = _message
 
     val visibleTasks: StateFlow<List<Task>> = combine(
         _tasks, _searchQuery, _filter, _sort, _categoryFilter
@@ -132,6 +137,35 @@ class TaskViewModel(
             _tasks.value.forEach { scheduler.cancel(it.id) }
             dao.deleteAllTasks()
             _tasks.value = emptyList()
+        }
+    }
+
+    // Sube las tareas locales a Firestore
+    fun syncUp() {
+        viewModelScope.launch {
+            _message.value = "Subiendo tareas..."
+            _message.value = try {
+                cloud.upload(dao.getAllTasks())
+                "Tareas subidas a la nube"
+            } catch (e: Exception) {
+                "Error al subir: ${e.message}"
+            }
+        }
+    }
+
+    // Reemplaza las tareas locales con las de Firestore
+    fun syncDown() {
+        viewModelScope.launch {
+            _message.value = "Descargando tareas..."
+            _message.value = try {
+                val remote = cloud.download()
+                dao.deleteAllTasks()
+                dao.insertAll(remote)
+                _tasks.value = dao.getAllTasks()
+                "Se descargaron ${remote.size} tareas"
+            } catch (e: Exception) {
+                "Error al descargar: ${e.message}"
+            }
         }
     }
 }
