@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
@@ -25,7 +26,6 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.room.Room
 import com.example.lab08.ui.theme.Lab08Theme
-import androidx.compose.foundation.verticalScroll
 
 // Opciones de recordatorio: texto y minutos de espera
 private val reminderOptions = listOf(
@@ -60,8 +60,9 @@ class MainActivity : ComponentActivity() {
                         .fallbackToDestructiveMigration(true)
                         .build()
                 }
+                // Ahora el ViewModel también recibe el repositorio de la nube
                 val viewModel = remember {
-                    TaskViewModel(db.taskDao(), ReminderScheduler(applicationContext))
+                    TaskViewModel(db.taskDao(), ReminderScheduler(applicationContext), CloudRepository())
                 }
 
                 TaskScreen(viewModel)
@@ -79,6 +80,7 @@ fun TaskScreen(viewModel: TaskViewModel) {
     val sort by viewModel.sort.collectAsState()
     val categoryFilter by viewModel.categoryFilter.collectAsState()
     val categories by viewModel.categories.collectAsState()
+    val message by viewModel.message.collectAsState()
 
     var showAddDialog by remember { mutableStateOf(false) }
     var taskToEdit by remember { mutableStateOf<Task?>(null) }
@@ -116,6 +118,15 @@ fun TaskScreen(viewModel: TaskViewModel) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(bottom = 8.dp)
             )
+
+            // Botones para sincronizar con Firestore
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { viewModel.syncUp() }) { Text("Subir a la nube") }
+                OutlinedButton(onClick = { viewModel.syncDown() }) { Text("Bajar de la nube") }
+            }
+            message?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall)
+            }
 
             OutlinedTextField(
                 value = query,
